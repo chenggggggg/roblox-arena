@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local CombatConfig = require(ReplicatedStorage.Modules.CombatConfig)
 
@@ -15,6 +16,20 @@ if not punchRemote then
 	punchRemote = Instance.new("RemoteEvent")
 	punchRemote.Name = "PunchRequest"
 	punchRemote.Parent = remotesFolder
+end
+
+local matchKillAwardedEvent = ServerScriptService:FindFirstChild("MatchKillAwarded")
+if not matchKillAwardedEvent then
+	matchKillAwardedEvent = Instance.new("BindableEvent")
+	matchKillAwardedEvent.Name = "MatchKillAwarded"
+	matchKillAwardedEvent.Parent = ServerScriptService
+end
+
+local canDamagePlayerFunction = ServerScriptService:FindFirstChild("CanDamagePlayer")
+if not canDamagePlayerFunction then
+	canDamagePlayerFunction = Instance.new("BindableFunction")
+	canDamagePlayerFunction.Name = "CanDamagePlayer"
+	canDamagePlayerFunction.Parent = ServerScriptService
 end
 
 local lastPunchTimes = {}
@@ -51,42 +66,6 @@ local function awardKill(attacker)
 	end
 end
 
-local function findPunchTarget(attacker)
-	local attackerCharacter, attackerHumanoid, attackerRoot = getCharacterParts(attacker)
-	if not attackerCharacter or not attackerHumanoid or not attackerRoot then
-		return nil
-	end
-
-	local bestTargetHumanoid = nil
-	local bestTargetPlayer = nil
-	local bestDistance = CombatConfig.PunchRange
-
-	for _, possibleTarget in Players:GetPlayers() do
-		if possibleTarget ~= attacker then
-			local targetCharacter, targetHumanoid, targetRoot = getCharacterParts(possibleTarget)
-
-			if targetCharacter and targetHumanoid and targetRoot then
-				local offset = targetRoot.Position - attackerRoot.Position
-				local distance = offset.Magnitude
-
-				if distance <= CombatConfig.PunchRange then
-					local directionToTarget = offset.Unit
-					local facingDirection = attackerRoot.CFrame.LookVector
-					local dot = facingDirection:Dot(directionToTarget)
-
-					if dot >= CombatConfig.PunchAngle and distance < bestDistance then
-						bestDistance = distance
-						bestTargetHumanoid = targetHumanoid
-						bestTargetPlayer = possibleTarget
-					end
-				end
-			end
-		end
-	end
-
-	return bestTargetHumanoid, bestTargetPlayer
-end
-
 local function canPunch(player)
 	local now = os.clock()
 	local lastPunchTime = lastPunchTimes[player]
@@ -99,12 +78,68 @@ local function canPunch(player)
 	return true
 end
 
+local function canDamagePlayer(attacker, target)
+	local success, result = pcall(function()
+		return canDamagePlayerFunction:Invoke(attacker, target)
+	end)
+
+	if not success then
+		return false
+	end
+
+	return result == true
+end
+
+local function isBetterPunchTarget(attackerRoot, targetRoot, bestDistance)
+	local offset = targetRoot.Position - attackerRoot.Position
+	local distance = offset.Magnitude
+
+	if distance > CombatConfig.PunchRange or distance >= bestDistance then
+		return false, distance
+	end
+
+	local directionToTarget = offset.Unit
+	local facingDirection = attackerRoot.CFrame.LookVector
+	local dot = facingDirection:Dot(directionToTarget)
+
+	return dot >= CombatConfig.PunchAngle, distance
+end
+
+local function findDamageablePunchTarget(attacker)
+	local attackerCharacter, attackerHumanoid, attackerRoot = getCharacterParts(attacker)
+	if not attackerCharacter or not attackerHumanoid or not attackerRoot then
+		return nil
+	end
+
+	local bestTargetHumanoid = nil
+	local bestTargetPlayer = nil
+	local bestDistance = CombatConfig.PunchRange
+
+	for _, possibleTarget in Players:GetPlayers() do
+		if possibleTarget ~= attacker and canDamagePlayer(attacker, possibleTarget) then
+			local targetCharacter, targetHumanoid, targetRoot = getCharacterParts(possibleTarget)
+
+			if targetCharacter and targetHumanoid and targetRoot then
+				local isBetterTarget, distance = isBetterPunchTarget(attackerRoot, targetRoot, bestDistance)
+
+				if isBetterTarget then
+					bestDistance = distance
+					bestTargetHumanoid = targetHumanoid
+					bestTargetPlayer = possibleTarget
+				end
+			end
+		end
+	end
+
+	return bestTargetHumanoid, bestTargetPlayer
+end
+
 punchRemote.OnServerEvent:Connect(function(player)
 	if not canPunch(player) then
 		return
 	end
 
-	local targetHumanoid, targetPlayer = findPunchTarget(player)
+	local targetHumanoid, targetPlayer = findDamageablePunchTarget(player)
 	if not targetHumanoid or not targetPlayer then
 		return
 	end
@@ -115,6 +150,7 @@ punchRemote.OnServerEvent:Connect(function(player)
 
 	if healthBeforeDamage > 0 and healthBeforeDamage <= CombatConfig.PunchDamage then
 		awardKill(player)
+		matchKillAwardedEvent:Fire(player, targetPlayer)
 	end
 end)
 
