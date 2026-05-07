@@ -1,0 +1,10 @@
+.aftman/
+.vscode/
+
+# Roblox Studio lock files
+*.rbxl.lock
+*.rbxlx.lock
+
+# OS metadata
+.DS_Store
+Thumbs.db
